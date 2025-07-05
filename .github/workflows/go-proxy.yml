@@ -22,14 +22,20 @@ jobs:
       with:
         go-version: '1.24.4'  # Match the version in go.mod
 
-    - name: Get tag name and version
+    - name: Get repository info and version
       id: get_version
       run: |
         TAG_NAME=${GITHUB_REF#refs/tags/}
         VERSION=${TAG_NAME#v}  # Remove 'v' prefix for version
+        REPO_PATH="${GITHUB_REPOSITORY}"  # Gets owner/repo format
+        MODULE_PATH="github.com/${REPO_PATH}"
         echo "TAG_NAME=$TAG_NAME" >> $GITHUB_OUTPUT
         echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "REPO_PATH=$REPO_PATH" >> $GITHUB_OUTPUT
+        echo "MODULE_PATH=$MODULE_PATH" >> $GITHUB_OUTPUT
         echo "Tag: $TAG_NAME, Version: $VERSION"
+        echo "Repository: $REPO_PATH"
+        echo "Module Path: $MODULE_PATH"
 
     - name: Generate changelog
       id: changelog
@@ -60,8 +66,8 @@ jobs:
 
     - name: Push module to Go proxy
       run: |
-        echo "Pushing module github.com/csmart-libs/gin-logger@${{ steps.get_version.outputs.TAG_NAME }} to Go proxy..."
-        GOPROXY=proxy.golang.org go list -m github.com/csmart-libs/gin-logger@${{ steps.get_version.outputs.TAG_NAME }}
+        echo "Pushing module ${{ steps.get_version.outputs.MODULE_PATH }}@${{ steps.get_version.outputs.TAG_NAME }} to Go proxy..."
+        GOPROXY=proxy.golang.org go list -m ${{ steps.get_version.outputs.MODULE_PATH }}@${{ steps.get_version.outputs.TAG_NAME }}
 
     - name: Verify module availability
       run: |
@@ -69,33 +75,42 @@ jobs:
         # Wait a moment for the proxy to process
         sleep 10
         # Try to fetch the module info to verify it's available
-        go list -m -versions github.com/csmart-libs/gin-logger
+        go list -m -versions ${{ steps.get_version.outputs.MODULE_PATH }}
 
     - name: Create GitHub Release
-      uses: actions/create-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.get_version.outputs.TAG_NAME }}
-        release_name: Release ${{ steps.get_version.outputs.TAG_NAME }}
-        body: |
-          # Release ${{ steps.get_version.outputs.TAG_NAME }}
+      run: |
+        # Create release body
+        cat > release_body.md << 'EOF'
+        # Release ${{ steps.get_version.outputs.TAG_NAME }}
 
-          ${{ steps.changelog.outputs.CHANGELOG }}
+        ${{ steps.changelog.outputs.CHANGELOG }}
 
-          ## Installation
+        ## Installation
 
-          ```bash
-          go get github.com/csmart-libs/gin-logger@${{ steps.get_version.outputs.TAG_NAME }}
-          ```
+        ```bash
+        go get ${{ steps.get_version.outputs.MODULE_PATH }}@${{ steps.get_version.outputs.TAG_NAME }}
+        ```
 
-          ## Go Module
+        ## Go Module
 
-          This release is available on the Go module proxy at:
-          - https://proxy.golang.org/github.com/csmart-libs/gin-logger/@v/${{ steps.get_version.outputs.TAG_NAME }}.info
+        This release is available on the Go module proxy at:
+        - https://proxy.golang.org/${{ steps.get_version.outputs.MODULE_PATH }}/@v/${{ steps.get_version.outputs.TAG_NAME }}.info
 
-          ## Verification
+        ## Verification
 
-          Module has been successfully pushed to Go proxy and is available for use.
-        draft: false
-        prerelease: ${{ contains(steps.get_version.outputs.TAG_NAME, '-') }}
+        Module has been successfully pushed to Go proxy and is available for use.
+        EOF
+
+        # Create release using GitHub CLI
+        if [[ "${{ steps.get_version.outputs.TAG_NAME }}" == *"-"* ]]; then
+          gh release create "${{ steps.get_version.outputs.TAG_NAME }}" \
+            --title "Release ${{ steps.get_version.outputs.TAG_NAME }}" \
+            --notes-file release_body.md \
+            --prerelease
+        else
+          gh release create "${{ steps.get_version.outputs.TAG_NAME }}" \
+            --title "Release ${{ steps.get_version.outputs.TAG_NAME }}" \
+            --notes-file release_body.md
+        fi
