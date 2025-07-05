@@ -18,7 +18,7 @@ Package logger cung cấp một wrapper mạnh mẽ cho Zap logger với hỗ tr
 ## Cài đặt
 
 ```bash
-go get github.com/nguyendkn/go-libs/logger
+go get github.com/csmart-libs/gin-logger
 ```
 
 ## Sử dụng cơ bản
@@ -28,7 +28,7 @@ go get github.com/nguyendkn/go-libs/logger
 ```go
 package main
 
-import "github.com/nguyendkn/go-libs/logger"
+import "github.com/csmart-libs/gin-logger"
 
 func main() {
     // Sử dụng config mặc định
