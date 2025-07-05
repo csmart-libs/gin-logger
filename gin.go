@@ -1,8 +1,9 @@
-package logger
+package ginlogger
 
 import (
 	"bytes"
 	"io"
+	"regexp"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -49,8 +50,9 @@ func GinLoggerWithConfig(config GinLoggerConfig) gin.HandlerFunc {
 
 		// Calculate latency
 		latency := time.Since(start)
+		timestamp := start
 		if config.UTC {
-			start = start.UTC()
+			timestamp = start.UTC()
 		}
 
 		// Build fields
@@ -62,6 +64,7 @@ func GinLoggerWithConfig(config GinLoggerConfig) gin.HandlerFunc {
 			zap.Int("status", c.Writer.Status()),
 			zap.Duration("latency", latency),
 			zap.Int("body_size", c.Writer.Size()),
+			zap.Time("timestamp", timestamp),
 		}
 
 		if raw != "" {
@@ -237,4 +240,224 @@ func LoggerFromContext(c *gin.Context) Logger {
 	}
 
 	return logger
+}
+
+// StructuredLogger middleware provides structured logging with customizable fields
+type StructuredLoggerConfig struct {
+	Logger          Logger
+	SkipPaths       []string
+	SkipPathRegexps []*regexp.Regexp
+	UTC             bool
+	LogHeaders      []string
+	LogRequestBody  bool
+	LogResponseBody bool
+	MaxBodySize     int64
+	LogUserAgent    bool
+	LogReferer      bool
+	LogClientIP     bool
+	CustomFields    func(*gin.Context) []zap.Field
+}
+
+func StructuredLogger(config StructuredLoggerConfig) gin.HandlerFunc {
+	logger := config.Logger
+	if logger == nil {
+		logger = GetLogger()
+	}
+
+	if config.MaxBodySize == 0 {
+		config.MaxBodySize = 1024 * 1024 // 1MB default
+	}
+
+	skipPaths := make(map[string]bool, len(config.SkipPaths))
+	for _, path := range config.SkipPaths {
+		skipPaths[path] = true
+	}
+
+	return func(c *gin.Context) {
+		// Skip logging for specified paths
+		if skipPaths[c.Request.URL.Path] {
+			c.Next()
+			return
+		}
+
+		// Check regex patterns
+		for _, regex := range config.SkipPathRegexps {
+			if regex.MatchString(c.Request.URL.Path) {
+				c.Next()
+				return
+			}
+		}
+
+		start := time.Now()
+		path := c.Request.URL.Path
+		raw := c.Request.URL.RawQuery
+
+		// Capture request body if needed
+		var requestBody string
+		if config.LogRequestBody && c.Request.Body != nil && c.Request.ContentLength <= config.MaxBodySize {
+			bodyBytes, err := io.ReadAll(c.Request.Body)
+			if err == nil {
+				requestBody = string(bodyBytes)
+				c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			}
+		}
+
+		// Process request
+		c.Next()
+
+		// Calculate latency
+		latency := time.Since(start)
+		timestamp := start
+		if config.UTC {
+			timestamp = start.UTC()
+		}
+
+		// Build base fields
+		fields := []zap.Field{
+			zap.String("method", c.Request.Method),
+			zap.String("path", path),
+			zap.Int("status", c.Writer.Status()),
+			zap.Duration("latency", latency),
+			zap.Int("body_size", c.Writer.Size()),
+			zap.Time("timestamp", timestamp),
+		}
+
+		// Add query parameters
+		if raw != "" {
+			fields = append(fields, zap.String("query", raw))
+		}
+
+		// Add client IP if enabled
+		if config.LogClientIP {
+			fields = append(fields, zap.String("ip", c.ClientIP()))
+		}
+
+		// Add user agent if enabled
+		if config.LogUserAgent {
+			fields = append(fields, zap.String("user_agent", c.Request.UserAgent()))
+		}
+
+		// Add referer if enabled
+		if config.LogReferer {
+			if referer := c.Request.Referer(); referer != "" {
+				fields = append(fields, zap.String("referer", referer))
+			}
+		}
+
+		// Add specific headers
+		for _, header := range config.LogHeaders {
+			if value := c.Request.Header.Get(header); value != "" {
+				fields = append(fields, zap.String("header_"+header, value))
+			}
+		}
+
+		// Add request body if captured
+		if requestBody != "" {
+			fields = append(fields, zap.String("request_body", requestBody))
+		}
+
+		// Add request ID if available
+		if requestID := c.GetString("request_id"); requestID != "" {
+			fields = append(fields, zap.String("request_id", requestID))
+		}
+
+		// Add user ID if available
+		if userID := c.GetString("user_id"); userID != "" {
+			fields = append(fields, zap.String("user_id", userID))
+		}
+
+		// Add custom fields if provided
+		if config.CustomFields != nil {
+			customFields := config.CustomFields(c)
+			fields = append(fields, customFields...)
+		}
+
+		// Log based on status code
+		switch {
+		case c.Writer.Status() >= 500:
+			logger.Error("Server error", fields...)
+		case c.Writer.Status() >= 400:
+			logger.Warn("Client error", fields...)
+		case c.Writer.Status() >= 300:
+			logger.Info("Redirection", fields...)
+		default:
+			logger.Info("Request completed", fields...)
+		}
+	}
+}
+
+// PerformanceLogger middleware logs performance metrics
+func PerformanceLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+
+		c.Next()
+
+		latency := time.Since(start)
+
+		// Log slow requests (> 1 second)
+		if latency > time.Second {
+			fields := []zap.Field{
+				zap.String("method", c.Request.Method),
+				zap.String("path", c.Request.URL.Path),
+				zap.Duration("latency", latency),
+				zap.Int("status", c.Writer.Status()),
+			}
+
+			if requestID := c.GetString("request_id"); requestID != "" {
+				fields = append(fields, zap.String("request_id", requestID))
+			}
+
+			GetLogger().Warn("Slow request detected", fields...)
+		}
+	}
+}
+
+// SecurityLogger middleware logs security-related events
+func SecurityLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Log suspicious patterns
+		userAgent := c.Request.UserAgent()
+		path := c.Request.URL.Path
+
+		// Check for common attack patterns
+		suspicious := false
+		reason := ""
+
+		// SQL injection patterns
+		if regexp.MustCompile(`(?i)(union|select|insert|delete|drop|create|alter|exec|script)`).MatchString(path) {
+			suspicious = true
+			reason = "SQL injection attempt"
+		}
+
+		// XSS patterns
+		if regexp.MustCompile(`(?i)(<script|javascript:|onload=|onerror=)`).MatchString(path) {
+			suspicious = true
+			reason = "XSS attempt"
+		}
+
+		// Path traversal
+		if regexp.MustCompile(`\.\./`).MatchString(path) {
+			suspicious = true
+			reason = "Path traversal attempt"
+		}
+
+		if suspicious {
+			fields := []zap.Field{
+				zap.String("method", c.Request.Method),
+				zap.String("path", path),
+				zap.String("ip", c.ClientIP()),
+				zap.String("user_agent", userAgent),
+				zap.String("reason", reason),
+			}
+
+			if requestID := c.GetString("request_id"); requestID != "" {
+				fields = append(fields, zap.String("request_id", requestID))
+			}
+
+			GetLogger().Warn("Suspicious request detected", fields...)
+		}
+
+		c.Next()
+	}
 }
