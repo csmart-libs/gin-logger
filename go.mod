@@ -1,4 +1,4 @@
-module github.com/csmart-libs/go-logger
+module github.com/csmart-libs/gin-logger
 
 go 1.24.4
 

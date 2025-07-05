@@ -1,0 +1,36 @@
+name: Push to Go Proxy
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers on version tags like v1.0.0, v2.1.3, etc.
+
+jobs:
+  push-to-goproxy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24.4'  # Match the version in go.mod
+
+    - name: Get tag name
+      id: get_tag
+      run: echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+    - name: Push module to Go proxy
+      run: |
+        echo "Pushing module github.com/csmart-libs/gin-logger@${{ steps.get_tag.outputs.TAG_NAME }} to Go proxy..."
+        GOPROXY=proxy.golang.org go list -m github.com/csmart-libs/gin-logger@${{ steps.get_tag.outputs.TAG_NAME }}
+
+    - name: Verify module availability
+      run: |
+        echo "Verifying module availability..."
+        # Wait a moment for the proxy to process
+        sleep 10
+        # Try to fetch the module info to verify it's available
+        go list -m -versions github.com/csmart-libs/gin-logger
